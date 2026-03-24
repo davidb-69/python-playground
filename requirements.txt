@@ -1,2 +1,4 @@
 streamlit
 gitpython
+supabase
+python-dotenv

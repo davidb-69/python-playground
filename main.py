@@ -1,16 +1,20 @@
-import json
 import os
-from datetime import date, datetime
+from datetime import date
 
+from dotenv import load_dotenv
+from supabase import create_client, Client
 import streamlit as st
-from git import Repo, InvalidGitRepositoryError
 
-DATA_FILE = "applications.json"
-STATUSES = ["Applied", "Phone Screen", "Interview", "Offer", "Rejected", "Withdrawn"]
+load_dotenv()
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+
+STATUSES = ["Applied", "Initial Screening", "Interview", "Offer", "Rejected", "Withdrawn"]
 
 STATUS_COLORS = {
     "Applied": "#4A90D9",
-    "Phone Screen": "#9B59B6",
+    "Initial Screening": "#9B59B6",
     "Interview": "#F39C12",
     "Offer": "#27AE60",
     "Rejected": "#E74C3C",
@@ -21,22 +25,34 @@ STATUS_COLORS = {
 STALE_STATUSES = {"Applied"}
 
 
-# ── Data helpers ──────────────────────────────────────────────────────────────
+# ── Supabase client ────────────────────────────────────────────────────────────
+
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+# ── Data helpers ───────────────────────────────────────────────────────────────
 
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        return []
-    with open(DATA_FILE) as f:
-        return json.load(f)
+    sb = get_supabase()
+    result = sb.table("applications").select("*").order("created_at").execute()
+    return result.data
 
 
-def save_data(apps):
-    with open(DATA_FILE, "w") as f:
-        json.dump(apps, f, indent=2)
+def add_application(record: dict):
+    sb = get_supabase()
+    sb.table("applications").insert(record).execute()
 
 
-def next_id(apps):
-    return max((a["id"] for a in apps), default=0) + 1
+def update_application(app_id: str, updates: dict):
+    sb = get_supabase()
+    sb.table("applications").update(updates).eq("id", app_id).execute()
+
+
+def delete_application(app_id: str):
+    sb = get_supabase()
+    sb.table("applications").delete().eq("id", app_id).execute()
 
 
 def days_since(date_str):
@@ -46,44 +62,7 @@ def days_since(date_str):
         return None
 
 
-# ── Git helpers ───────────────────────────────────────────────────────────────
-
-def get_repo():
-    return Repo(search_parent_directories=True)
-
-
-def git_pull():
-    """Pull latest from origin. Returns (success: bool, message: str)."""
-    try:
-        repo = get_repo()
-        result = repo.remotes.origin.pull()
-        flags = result[0].flags if result else 0
-        if flags & 4:   # HEAD_UPTODATE
-            return True, "Already up to date."
-        return True, "Pulled latest changes from GitHub."
-    except InvalidGitRepositoryError:
-        return False, "Not a git repository."
-    except Exception as e:
-        return False, str(e)
-
-
-def git_push(message="Update applications data"):
-    """Stage applications.json, commit, and push. Returns (success: bool, message: str)."""
-    try:
-        repo = get_repo()
-        repo.index.add([os.path.abspath(DATA_FILE)])
-        if repo.is_dirty(index=True):
-            repo.index.commit(message)
-            repo.remotes.origin.push()
-            return True, "Pushed to GitHub successfully."
-        return True, "Nothing to push — data is already up to date."
-    except InvalidGitRepositoryError:
-        return False, "Not a git repository."
-    except Exception as e:
-        return False, str(e)
-
-
-# ── UI helpers ────────────────────────────────────────────────────────────────
+# ── UI helpers ─────────────────────────────────────────────────────────────────
 
 def status_badge(status):
     color = STATUS_COLORS.get(status, "#888")
@@ -109,7 +88,7 @@ def staleness_style(app):
     return f"border-left: 4px solid {color}; padding-left: 6px;"
 
 
-# ── Page config ───────────────────────────────────────────────────────────────
+# ── Page config ────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Job Tracker", page_icon="💼", layout="wide")
 
@@ -121,43 +100,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── State ─────────────────────────────────────────────────────────────────────
+# ── State ──────────────────────────────────────────────────────────────────────
 
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
-if "git_message" not in st.session_state:
-    st.session_state.git_message = None  # (success: bool, text: str) | None
-
-# Auto-pull on first load
-if "pulled" not in st.session_state:
-    st.session_state.pulled = True
-    ok, msg = git_pull()
-    st.session_state.git_message = (ok, f"Startup sync: {msg}")
 
 apps = load_data()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
-with st.sidebar:
-    st.header("GitHub Sync")
-
-    if st.button("🔄 Pull latest", use_container_width=True):
-        ok, msg = git_pull()
-        st.session_state.git_message = (ok, msg)
-        st.rerun()
-
-    if st.button("☁️ Push to GitHub", use_container_width=True, type="primary"):
-        ok, msg = git_push("Update applications data")
-        st.session_state.git_message = (ok, msg)
-
-    if st.session_state.git_message:
-        ok, msg = st.session_state.git_message
-        if ok:
-            st.success(msg)
-        else:
-            st.error(msg)
-
-# ── Header ────────────────────────────────────────────────────────────────────
+# ── Header ─────────────────────────────────────────────────────────────────────
 
 st.title("💼 Job Application Tracker")
 
@@ -170,7 +120,7 @@ for col, status in zip(cols, STATUSES):
 
 st.divider()
 
-# ── Add form ──────────────────────────────────────────────────────────────────
+# ── Add form ───────────────────────────────────────────────────────────────────
 
 with st.expander("➕ Add New Application", expanded=not apps):
     with st.form("add_form", clear_on_submit=True):
@@ -192,21 +142,19 @@ with st.expander("➕ Add New Application", expanded=not apps):
             if not company or not role:
                 st.error("Company and Role are required.")
             else:
-                apps.append({
-                    "id": next_id(apps),
+                add_application({
                     "company": company,
                     "role": role,
                     "date_applied": str(applied),
-                    "interview_date": str(interview_date) if interview_date else "",
+                    "interview_date": str(interview_date) if interview_date else None,
                     "status": status,
                     "recruiter": recruiter,
                     "notes": notes,
                 })
-                save_data(apps)
                 st.success(f"Added: {company} — {role}")
                 st.rerun()
 
-# ── Edit form ─────────────────────────────────────────────────────────────────
+# ── Edit form ──────────────────────────────────────────────────────────────────
 
 if st.session_state.editing_id is not None:
     app = next((a for a in apps if a["id"] == st.session_state.editing_id), None)
@@ -220,31 +168,30 @@ if st.session_state.editing_id is not None:
             c3, c4, c5 = st.columns(3)
             applied = c3.date_input("Date Applied", value=date.fromisoformat(app["date_applied"]))
             status = c4.selectbox("Status", STATUSES, index=STATUSES.index(app["status"]))
-            recruiter = c5.text_input("Recruiter Name", value=app.get("recruiter", ""))
+            recruiter = c5.text_input("Recruiter Name", value=app.get("recruiter") or "")
 
             c6, c7 = st.columns(2)
-            existing_interview = app.get("interview_date", "")
+            existing_interview = app.get("interview_date") or ""
             interview_date = c6.date_input(
                 "Interview Date (optional)",
                 value=date.fromisoformat(existing_interview) if existing_interview else None,
             )
-            notes = c7.text_area("Notes", value=app.get("notes", ""), height=80)
+            notes = c7.text_area("Notes", value=app.get("notes") or "", height=80)
 
             sc1, sc2 = st.columns([1, 5])
             save = sc1.form_submit_button("Save", type="primary")
             cancel = sc2.form_submit_button("Cancel")
 
             if save:
-                app.update({
+                update_application(app["id"], {
                     "company": company,
                     "role": role,
                     "date_applied": str(applied),
-                    "interview_date": str(interview_date) if interview_date else "",
+                    "interview_date": str(interview_date) if interview_date else None,
                     "status": status,
                     "recruiter": recruiter,
                     "notes": notes,
                 })
-                save_data(apps)
                 st.session_state.editing_id = None
                 st.rerun()
             if cancel:
@@ -253,7 +200,7 @@ if st.session_state.editing_id is not None:
 
         st.divider()
 
-# ── Applications table ────────────────────────────────────────────────────────
+# ── Applications table ─────────────────────────────────────────────────────────
 
 st.subheader(f"Applications ({total})")
 
@@ -303,14 +250,13 @@ else:
         row[3].write(app.get("interview_date") or "—")
         row[4].write(str(days) if days is not None else "—")
         row[5].markdown(status_badge(app["status"]), unsafe_allow_html=True)
-        row[6].write(app.get("recruiter", ""))
+        row[6].write(app.get("recruiter") or "")
 
         if row[7].button("✏️", key=f"edit_{app['id']}", help="Edit"):
             st.session_state.editing_id = app["id"]
             st.rerun()
         if row[8].button("🗑️", key=f"del_{app['id']}", help="Delete"):
-            apps.remove(app)
-            save_data(apps)
+            delete_application(app["id"])
             st.rerun()
 
         # Expandable notes
