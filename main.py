@@ -1,3 +1,6 @@
+import base64
+import csv
+import io
 import os
 from datetime import date
 
@@ -93,6 +96,104 @@ def staleness_style(app):
     else:
         color = "#E74C3C"   # red
     return f"border-left: 4px solid {color}; padding-left: 6px;"
+
+
+# ── Export helpers ─────────────────────────────────────────────────────────────
+
+def build_csv(apps) -> bytes:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Company", "Role", "Date Applied", "Interview Date", "Days", "Status", "Recruiter", "Notes"])
+    for app in apps:
+        days = days_since(app["date_applied"])
+        writer.writerow([
+            app["company"],
+            app["role"],
+            app["date_applied"],
+            app.get("interview_date") or "",
+            str(days) if days is not None else "",
+            app["status"],
+            app.get("recruiter") or "",
+            app.get("notes") or "",
+        ])
+    return buf.getvalue().encode()
+
+
+def build_print_html(apps) -> str:
+    rows_html = ""
+    for app in apps:
+        days = days_since(app["date_applied"])
+        color = STATUS_COLORS.get(app["status"], "#888")
+        notes_escaped = (app.get("notes") or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        rows_html += (
+            f"<tr>"
+            f"<td>{app['company']}</td>"
+            f"<td>{app['role']}</td>"
+            f"<td>{app['date_applied']}</td>"
+            f"<td>{app.get('interview_date') or '—'}</td>"
+            f"<td style='text-align:center'>{str(days) if days is not None else '—'}</td>"
+            f"<td><span class='badge' style='background:{color}'>{app['status']}</span></td>"
+            f"<td>{app.get('recruiter') or ''}</td>"
+            f"<td class='notes'>{notes_escaped}</td>"
+            f"</tr>\n"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Applications Export</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            font-size: 12px; color: #111; padding: 24px; background: #fff; }}
+    h1 {{ font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }}
+    .meta {{ color: #666; font-size: 0.82rem; margin-bottom: 20px; }}
+    table {{ border-collapse: collapse; width: 100%; table-layout: auto; }}
+    thead th {{ background: #f4f4f4; padding: 7px 10px; text-align: left;
+                font-size: 10px; font-weight: 700; text-transform: uppercase;
+                letter-spacing: 0.06em; border-bottom: 2px solid #ccc; white-space: nowrap; }}
+    tbody td {{ padding: 7px 10px; border-bottom: 1px solid #e8e8e8; vertical-align: top; }}
+    tbody tr:nth-child(even) {{ background: #fafafa; }}
+    .badge {{ display: inline-block; color: #fff; padding: 2px 8px;
+              border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }}
+    .notes {{ max-width: 180px; font-size: 11px; color: #444; word-break: break-word; }}
+    .print-btn {{ display: inline-block; margin-bottom: 18px; padding: 8px 20px;
+                  background: #4A90D9; color: #fff; border: none; border-radius: 6px;
+                  font-size: 0.9rem; cursor: pointer; font-family: inherit; }}
+    .print-btn:hover {{ background: #3a7bc8; }}
+    @media print {{
+      .print-btn {{ display: none; }}
+      body {{ padding: 0; }}
+      tbody tr:nth-child(even) {{ background: none; }}
+      thead th {{ background: #eee; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      .badge {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    }}
+  </style>
+</head>
+<body>
+  <button class="print-btn no-print" onclick="window.print()">🖨 Print</button>
+  <h1>💼 Job Applications</h1>
+  <p class="meta">Exported {date.today().strftime("%-d %B %Y")} &nbsp;·&nbsp; {len(apps)} application{"s" if len(apps) != 1 else ""}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Company</th>
+        <th>Role</th>
+        <th>Date Applied</th>
+        <th>Interview Date</th>
+        <th>Days</th>
+        <th>Status</th>
+        <th>Recruiter</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+{rows_html}    </tbody>
+  </table>
+</body>
+</html>"""
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -299,3 +400,31 @@ else:
         if app.get("notes"):
             with st.expander(f"Notes — {app['company']}", expanded=False):
                 st.write(app["notes"])
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("Export")
+
+exp1, exp2 = st.columns(2)
+
+with exp1:
+    csv_bytes = build_csv(apps)
+    st.download_button(
+        label="⬇️ Export to CSV",
+        data=csv_bytes,
+        file_name=f"job_applications_{date.today().isoformat()}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+with exp2:
+    html_content = build_print_html(apps)
+    b64 = base64.b64encode(html_content.encode()).decode()
+    st.markdown(
+        f'<a href="data:text/html;base64,{b64}" target="_blank" '
+        f'style="display:block;text-align:center;padding:0.45rem 1rem;'
+        f'background:#4A90D9;color:white;border-radius:6px;text-decoration:none;'
+        f'font-size:0.9rem;font-weight:500;width:100%;">🖨️ Print-Friendly View</a>',
+        unsafe_allow_html=True,
+    )
