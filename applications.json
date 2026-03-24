@@ -17,5 +17,15 @@
     "status": "Interview",
     "recruiter": "Mrs Smith",
     "notes": ""
+  },
+  {
+    "id": 5,
+    "company": "BAE Systems",
+    "role": "Principal Systems Engineer",
+    "date_applied": "2026-03-22",
+    "interview_date": "",
+    "status": "Applied",
+    "recruiter": "Justine",
+    "notes": "Requires Security Clearance"
   }
 ]
