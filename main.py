@@ -1,8 +1,9 @@
 import json
 import os
-from datetime import date
+from datetime import date, datetime
 
 import streamlit as st
+from git import Repo, InvalidGitRepositoryError
 
 DATA_FILE = "applications.json"
 STATUSES = ["Applied", "Phone Screen", "Interview", "Offer", "Rejected", "Withdrawn"]
@@ -16,6 +17,11 @@ STATUS_COLORS = {
     "Withdrawn": "#95A5A6",
 }
 
+# Staleness only applies when status hasn't progressed beyond Applied
+STALE_STATUSES = {"Applied"}
+
+
+# ── Data helpers ──────────────────────────────────────────────────────────────
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -33,12 +39,77 @@ def next_id(apps):
     return max((a["id"] for a in apps), default=0) + 1
 
 
+def days_since(date_str):
+    try:
+        return (date.today() - date.fromisoformat(date_str)).days
+    except (ValueError, TypeError):
+        return None
+
+
+# ── Git helpers ───────────────────────────────────────────────────────────────
+
+def get_repo():
+    return Repo(search_parent_directories=True)
+
+
+def git_pull():
+    """Pull latest from origin. Returns (success: bool, message: str)."""
+    try:
+        repo = get_repo()
+        result = repo.remotes.origin.pull()
+        flags = result[0].flags if result else 0
+        if flags & 4:   # HEAD_UPTODATE
+            return True, "Already up to date."
+        return True, "Pulled latest changes from GitHub."
+    except InvalidGitRepositoryError:
+        return False, "Not a git repository."
+    except Exception as e:
+        return False, str(e)
+
+
+def git_push(message="Update applications data"):
+    """Stage applications.json, commit, and push. Returns (success: bool, message: str)."""
+    try:
+        repo = get_repo()
+        repo.index.add([os.path.abspath(DATA_FILE)])
+        if repo.is_dirty(index=True):
+            repo.index.commit(message)
+            repo.remotes.origin.push()
+            return True, "Pushed to GitHub successfully."
+        return True, "Nothing to push — data is already up to date."
+    except InvalidGitRepositoryError:
+        return False, "Not a git repository."
+    except Exception as e:
+        return False, str(e)
+
+
+# ── UI helpers ────────────────────────────────────────────────────────────────
+
 def status_badge(status):
     color = STATUS_COLORS.get(status, "#888")
-    return f'<span style="background:{color};color:white;padding:2px 10px;border-radius:12px;font-size:0.8em;font-weight:600">{status}</span>'
+    return (
+        f'<span style="background:{color};color:white;padding:2px 10px;'
+        f'border-radius:12px;font-size:0.8em;font-weight:600">{status}</span>'
+    )
 
 
-# ── Page config ──────────────────────────────────────────────────────────────
+def staleness_style(app):
+    """Return a left-border CSS style based on recency, only for stale statuses."""
+    if app["status"] not in STALE_STATUSES:
+        return ""
+    days = days_since(app["date_applied"])
+    if days is None:
+        return ""
+    if days <= 7:
+        color = "#27AE60"   # green
+    elif days <= 14:
+        color = "#F39C12"   # amber
+    else:
+        color = "#E74C3C"   # red
+    return f"border-left: 4px solid {color}; padding-left: 6px;"
+
+
+# ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Job Tracker", page_icon="💼", layout="wide")
 
@@ -54,8 +125,37 @@ st.markdown("""
 
 if "editing_id" not in st.session_state:
     st.session_state.editing_id = None
+if "git_message" not in st.session_state:
+    st.session_state.git_message = None  # (success: bool, text: str) | None
+
+# Auto-pull on first load
+if "pulled" not in st.session_state:
+    st.session_state.pulled = True
+    ok, msg = git_pull()
+    st.session_state.git_message = (ok, f"Startup sync: {msg}")
 
 apps = load_data()
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.header("GitHub Sync")
+
+    if st.button("🔄 Pull latest", use_container_width=True):
+        ok, msg = git_pull()
+        st.session_state.git_message = (ok, msg)
+        st.rerun()
+
+    if st.button("☁️ Push to GitHub", use_container_width=True, type="primary"):
+        ok, msg = git_push("Update applications data")
+        st.session_state.git_message = (ok, msg)
+
+    if st.session_state.git_message:
+        ok, msg = st.session_state.git_message
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
@@ -83,7 +183,9 @@ with st.expander("➕ Add New Application", expanded=not apps):
         status = c4.selectbox("Status", STATUSES)
         recruiter = c5.text_input("Recruiter Name")
 
-        notes = st.text_area("Notes", height=80)
+        c6, c7 = st.columns(2)
+        interview_date = c6.date_input("Interview Date (optional)", value=None)
+        notes = c7.text_area("Notes", height=80)
 
         submitted = st.form_submit_button("Add Application", type="primary")
         if submitted:
@@ -95,6 +197,7 @@ with st.expander("➕ Add New Application", expanded=not apps):
                     "company": company,
                     "role": role,
                     "date_applied": str(applied),
+                    "interview_date": str(interview_date) if interview_date else "",
                     "status": status,
                     "recruiter": recruiter,
                     "notes": notes,
@@ -103,7 +206,7 @@ with st.expander("➕ Add New Application", expanded=not apps):
                 st.success(f"Added: {company} — {role}")
                 st.rerun()
 
-# ── Edit modal ────────────────────────────────────────────────────────────────
+# ── Edit form ─────────────────────────────────────────────────────────────────
 
 if st.session_state.editing_id is not None:
     app = next((a for a in apps if a["id"] == st.session_state.editing_id), None)
@@ -119,7 +222,13 @@ if st.session_state.editing_id is not None:
             status = c4.selectbox("Status", STATUSES, index=STATUSES.index(app["status"]))
             recruiter = c5.text_input("Recruiter Name", value=app.get("recruiter", ""))
 
-            notes = st.text_area("Notes", value=app.get("notes", ""), height=80)
+            c6, c7 = st.columns(2)
+            existing_interview = app.get("interview_date", "")
+            interview_date = c6.date_input(
+                "Interview Date (optional)",
+                value=date.fromisoformat(existing_interview) if existing_interview else None,
+            )
+            notes = c7.text_area("Notes", value=app.get("notes", ""), height=80)
 
             sc1, sc2 = st.columns([1, 5])
             save = sc1.form_submit_button("Save", type="primary")
@@ -130,6 +239,7 @@ if st.session_state.editing_id is not None:
                     "company": company,
                     "role": role,
                     "date_applied": str(applied),
+                    "interview_date": str(interview_date) if interview_date else "",
                     "status": status,
                     "recruiter": recruiter,
                     "notes": notes,
@@ -150,10 +260,15 @@ st.subheader(f"Applications ({total})")
 if not apps:
     st.info("No applications yet. Add one above to get started.")
 else:
-    # Sort controls
     sort_col, filter_col = st.columns([1, 2])
-    sort_by = sort_col.selectbox("Sort by", ["Date (newest)", "Date (oldest)", "Company", "Status"], label_visibility="collapsed")
-    filter_status = filter_col.multiselect("Filter by status", STATUSES, placeholder="Filter by status...", label_visibility="collapsed")
+    sort_by = sort_col.selectbox(
+        "Sort by",
+        ["Date (newest)", "Date (oldest)", "Company", "Status", "Days since applied"],
+        label_visibility="collapsed",
+    )
+    filter_status = filter_col.multiselect(
+        "Filter by status", STATUSES, placeholder="Filter by status...", label_visibility="collapsed"
+    )
 
     filtered = [a for a in apps if not filter_status or a["status"] in filter_status]
 
@@ -165,25 +280,40 @@ else:
         filtered.sort(key=lambda a: a["company"].lower())
     elif sort_by == "Status":
         filtered.sort(key=lambda a: STATUSES.index(a["status"]))
+    elif sort_by == "Days since applied":
+        filtered.sort(key=lambda a: days_since(a["date_applied"]) or 0, reverse=True)
 
-    # Header row
-    h = st.columns([2.5, 2.5, 1.5, 1.8, 1.8, 2, 0.7, 0.7])
-    for col, label in zip(h, ["Company", "Role", "Date Applied", "Status", "Recruiter", "Notes", "", ""]):
+    # Column layout: company, role, date applied, interview date, days, status, recruiter, actions
+    COLS = [2, 2, 1.3, 1.3, 0.9, 1.6, 1.6, 0.6, 0.6]
+    HEADERS = ["Company", "Role", "Applied", "Interview", "Days", "Status", "Recruiter", "", ""]
+
+    h = st.columns(COLS)
+    for col, label in zip(h, HEADERS):
         col.markdown(f"**{label}**")
     st.markdown('<hr style="margin:4px 0 8px">', unsafe_allow_html=True)
 
     for app in filtered:
-        row = st.columns([2.5, 2.5, 1.5, 1.8, 1.8, 2, 0.7, 0.7])
-        row[0].write(app["company"])
+        row = st.columns(COLS)
+        style = staleness_style(app)
+        days = days_since(app["date_applied"])
+
+        row[0].markdown(f'<div style="{style}">{app["company"]}</div>', unsafe_allow_html=True)
         row[1].write(app["role"])
         row[2].write(app["date_applied"])
-        row[3].markdown(status_badge(app["status"]), unsafe_allow_html=True)
-        row[4].write(app.get("recruiter", ""))
-        row[5].write(app.get("notes", ""))
-        if row[6].button("✏️", key=f"edit_{app['id']}", help="Edit"):
+        row[3].write(app.get("interview_date") or "—")
+        row[4].write(str(days) if days is not None else "—")
+        row[5].markdown(status_badge(app["status"]), unsafe_allow_html=True)
+        row[6].write(app.get("recruiter", ""))
+
+        if row[7].button("✏️", key=f"edit_{app['id']}", help="Edit"):
             st.session_state.editing_id = app["id"]
             st.rerun()
-        if row[7].button("🗑️", key=f"del_{app['id']}", help="Delete"):
+        if row[8].button("🗑️", key=f"del_{app['id']}", help="Delete"):
             apps.remove(app)
             save_data(apps)
             st.rerun()
+
+        # Expandable notes
+        if app.get("notes"):
+            with st.expander(f"Notes — {app['company']}", expanded=False):
+                st.write(app["notes"])
