@@ -9,6 +9,7 @@ load_dotenv()
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+APP_PASSWORD = os.environ["APP_PASSWORD"]
 
 STATUSES = ["Applied", "Initial Screening", "Interview", "Offer", "Rejected", "Withdrawn"]
 
@@ -99,6 +100,35 @@ st.markdown("""
     .stButton button { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.markdown("""
+    <style>
+        section[data-testid="stMain"] > div { display: flex; justify-content: center; }
+        div[data-testid="stVerticalBlockBorderWrapper"] { max-width: 380px; width: 100%; }
+        .login-title { text-align: center; font-size: 1.6rem; font-weight: 700;
+                       margin-bottom: 0.25rem; color: #e0e0e0; }
+        .login-sub { text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown('<div class="login-title">💼 Job Tracker</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-sub">Enter your password to continue</div>', unsafe_allow_html=True)
+        pwd = st.text_input("Password", type="password", label_visibility="collapsed",
+                            placeholder="Password")
+        if st.button("Sign in", type="primary", use_container_width=True):
+            if pwd == APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    st.stop()
 
 # ── State ──────────────────────────────────────────────────────────────────────
 
