@@ -1,14 +1,5 @@
 [
   {
-    "id": 3,
-    "company": "Test",
-    "role": "Engineer",
-    "date_applied": "2026-03-24",
-    "status": "Applied",
-    "recruiter": "Someone",
-    "notes": "Test addition"
-  },
-  {
     "id": 4,
     "company": "Another",
     "role": "Some new job",
