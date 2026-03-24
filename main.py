@@ -7,9 +7,15 @@ import streamlit as st
 
 load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-APP_PASSWORD = os.environ["APP_PASSWORD"]
+def get_secret(key: str) -> str:
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.environ[key]
+
+SUPABASE_URL = get_secret("SUPABASE_URL")
+SUPABASE_KEY = get_secret("SUPABASE_KEY")
+APP_PASSWORD = get_secret("APP_PASSWORD")
 
 STATUSES = ["Applied", "Initial Screening", "Interview", "Offer", "Rejected", "Withdrawn"]
 
